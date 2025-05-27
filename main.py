@@ -2,6 +2,16 @@ from fastapi import FastAPI, UploadFile, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import shutil, os, uuid, json
+import boto3
+from botocore.exceptions import NoCredentialsError
+
+# === S3 CONFIG ===
+S3_BUCKET = "idd-processor-bucket"  # <-- Replace with your bucket name
+S3_REGION = "us-east-1"             # <-- Replace with your region
+AWS_ACCESS_KEY = os.getenv("AWS_ACCESS_KEY_ID")
+AWS_SECRET_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
+
+s3_client = boto3.client("s3", aws_access_key_id=AWS_ACCESS_KEY, aws_secret_access_key=AWS_SECRET_KEY, region_name=S3_REGION)
 
 app = FastAPI()
 UPLOAD_DIR = "uploads"
@@ -26,7 +36,7 @@ def format_to_regex(format_string):
 async def upload_file(file: UploadFile, target_formats: str = Form(...), base_url: str = Form(...),
                       utm_source: str = Form(...), utm_medium: str = Form(...), utm_campaign: str = Form(...)):
 
-    # Save file
+    # Save file locally (optional, mainly for debugging)
     file_id = str(uuid.uuid4())
     upload_path = os.path.join(UPLOAD_DIR, f"{file_id}_{file.filename}")
     with open(upload_path, "wb") as buffer:
@@ -38,8 +48,8 @@ async def upload_file(file: UploadFile, target_formats: str = Form(...), base_ur
 
     # Prepare JSON job data
     job_data = {
-        "input_file": upload_path,
-        "output_file": os.path.join(UPLOAD_DIR, f"{file_id}_processed.indd"),
+        "input_file": f"uploads/{file_id}_{file.filename}",
+        "output_file": f"uploads/{file_id}_processed.indd",
         "regexPatterns": regex_patterns,
         "baseURL": base_url,
         "utmParams": {
@@ -53,4 +63,11 @@ async def upload_file(file: UploadFile, target_formats: str = Form(...), base_ur
     with open(job_file, "w") as f:
         json.dump(job_data, f, indent=2)
 
-    return JSONResponse({"message": "File received. Processing will start shortly."})
+    # Upload to S3
+    try:
+        s3_client.upload_file(upload_path, S3_BUCKET, f"uploads/{file_id}_{file.filename}")
+        s3_client.upload_file(job_file, S3_BUCKET, f"jobs/{file_id}.json")
+    except NoCredentialsError:
+        return JSONResponse({"error": "AWS credentials not configured properly."}, status_code=500)
+
+    return JSONResponse({"message": "File received and uploaded to S3. Processing will start shortly."})
