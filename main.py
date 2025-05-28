@@ -2,15 +2,15 @@ import os
 import uuid
 import json
 import shutil
-from fastapi import FastAPI, UploadFile, Form
+from fastapi import FastAPI, UploadFile, Form, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 import boto3
 from botocore.exceptions import NoCredentialsError, ClientError
 
 # === S3 CONFIG ===
 S3_BUCKET = "idd-processor-bucket"
-S3_REGION = "us-east-1"
+S3_REGION = "us-east-2"  # UPDATED TO MATCH YOUR REAL BUCKET REGION
 AWS_ACCESS_KEY = os.getenv("AWS_ACCESS_KEY_ID")
 AWS_SECRET_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
 
@@ -54,17 +54,6 @@ def s3_key_exists(key):
             return False
         else:
             raise e
-
-def get_presigned_url(key, expires=3600):
-    try:
-        url = s3_client.generate_presigned_url(
-            'get_object',
-            Params={'Bucket': S3_BUCKET, 'Key': key},
-            ExpiresIn=expires
-        )
-        return url
-    except Exception as e:
-        return ""
 
 @app.post("/upload/")
 async def upload_file(
@@ -135,10 +124,35 @@ def job_status(job_id: str):
 
     if s3_key_exists(processed_key):
         status["processed_ready"] = True
-        status["processed_url"] = get_presigned_url(processed_key)
+        status["processed_url"] = f"/download/{job_id}/processed"
     if s3_key_exists(report_key):
         status["report_ready"] = True
-        status["report_url"] = get_presigned_url(report_key)
+        status["report_url"] = f"/download/{job_id}/report"
 
-    # Optionally, add job parameters for frontend display (not strictly necessary)
     return JSONResponse(status)
+
+@app.get("/download/{job_id}/{filetype}")
+def download_file(job_id: str, filetype: str):
+    if filetype == "processed":
+        key = f"processed/{job_id}_processed.indd"
+        filename = f"{job_id}_processed.indd"
+        media_type = "application/octet-stream"
+    elif filetype == "report":
+        key = f"reports/{job_id}_hyperlink_report.txt"
+        filename = f"{job_id}_hyperlink_report.txt"
+        media_type = "text/plain"
+    else:
+        raise HTTPException(status_code=404, detail="Invalid file type")
+
+    try:
+        s3_response = s3_client.get_object(Bucket=S3_BUCKET, Key=key)
+        return StreamingResponse(
+            s3_response["Body"],
+            media_type=media_type,
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+        )
+    except ClientError as e:
+        if e.response['Error']['Code'] == "NoSuchKey":
+            raise HTTPException(status_code=404, detail="File not found.")
+        else:
+            raise HTTPException(status_code=500, detail="S3 error.")
