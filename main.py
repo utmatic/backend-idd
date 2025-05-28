@@ -13,7 +13,7 @@ from botocore.exceptions import NoCredentialsError, ClientError
 S3_BUCKET = "idd-processor-bucket"
 S3_REGION = "us-east-2"  # MATCH YOUR ACTUAL BUCKET REGION
 AWS_ACCESS_KEY = os.getenv("AWS_ACCESS_KEY_ID")
-AWS_SECRET_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
+AWS_SECRET_KEY = os.getenv("AWS_ACCESS_KEY")
 
 s3_client = boto3.client(
     "s3",
@@ -71,12 +71,18 @@ def generate_presigned_url(key, expiration=3600):
 @app.post("/upload/")
 async def upload_file(
     file: UploadFile,
-    target_formats: str = Form(...),
-    base_url: str = Form(...),
-    utm_source: str = Form(...),
-    utm_medium: str = Form(...),
-    utm_campaign: str = Form(...)
+    job_type: str = Form(...),
+    target_formats: str = Form(""),
+    base_url: str = Form(""),
+    utm_source: str = Form(""),
+    utm_medium: str = Form(""),
+    utm_campaign: str = Form("")
 ):
+    """
+    Accepts the new job_type (add_utm, add_links_only, add_links_with_utm).
+    For add_utm: doesn't require target_formats or base_url.
+    For add_links_only/add_links_with_utm: uses formats and base_url as before.
+    """
     job_id = str(uuid.uuid4())
     filename = f"{job_id}_{file.filename}"
     upload_path = os.path.join(UPLOAD_DIR, filename)
@@ -85,12 +91,12 @@ async def upload_file(
     with open(upload_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
 
-    # --- Updated: Parse target_formats as comma- or newline-separated values
-    # Accept input like "PDF, IDML, TXT" or "PDF\nIDML\nTXT" or any mix
-    # Remove extra whitespace and ignore empty values
-    # Accept both comma and newline as separators
-    format_list = [fmt.strip() for fmt in re.split(r'[,\\n]+', target_formats) if fmt.strip()]
-    regex_patterns = [format_to_regex(fmt) for fmt in format_list]
+    # --- Parse target_formats only if needed
+    format_list, regex_patterns = [], []
+    if job_type in ["add_links_only", "add_links_with_utm"]:
+        # Accept input like "PDF, IDML, TXT" or "PDF\nIDML\nTXT" or any mix
+        format_list = [fmt.strip() for fmt in re.split(r'[,\\n]+', target_formats) if fmt.strip()]
+        regex_patterns = [format_to_regex(fmt) for fmt in format_list]
 
     # Prepare job data
     job_data = {
@@ -98,6 +104,7 @@ async def upload_file(
         "input_file": f"uploads/{filename}",
         "output_file": f"processed/{job_id}_processed.indd",
         "report_file": f"reports/{job_id}_hyperlink_report.txt",
+        "job_type": job_type,
         "regexPatterns": regex_patterns,
         "baseURL": base_url,
         "utmParams": {
