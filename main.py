@@ -121,7 +121,11 @@ async def upload_file(
     # Upload to S3
     try:
         s3_client.upload_file(upload_path, S3_BUCKET, job_data["input_file"])
-        s3_client.upload_file(job_file, S3_BUCKET, f"jobs/{job_id}.json")
+        # THIS IS THE MAIN CHANGE:
+        s3_job_key = f"jobs/{job_id}.json"
+        if job_type == "add_utm":
+            s3_job_key = f"utm-jobs/{job_id}.json"
+        s3_client.upload_file(job_file, S3_BUCKET, s3_job_key)
     except NoCredentialsError:
         return JSONResponse({"error": "AWS credentials not configured properly."}, status_code=500)
     except Exception as e:
