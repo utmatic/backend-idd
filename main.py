@@ -2,6 +2,7 @@ import os
 import uuid
 import json
 import shutil
+import re
 from fastapi import FastAPI, UploadFile, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -84,8 +85,11 @@ async def upload_file(
     with open(upload_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
 
-    # Convert formats to regex
-    format_list = [line.strip() for line in target_formats.strip().splitlines() if line.strip()]
+    # --- Updated: Parse target_formats as comma- or newline-separated values
+    # Accept input like "PDF, IDML, TXT" or "PDF\nIDML\nTXT" or any mix
+    # Remove extra whitespace and ignore empty values
+    # Accept both comma and newline as separators
+    format_list = [fmt.strip() for fmt in re.split(r'[,\\n]+', target_formats) if fmt.strip()]
     regex_patterns = [format_to_regex(fmt) for fmt in format_list]
 
     # Prepare job data
