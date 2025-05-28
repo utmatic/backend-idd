@@ -2,7 +2,7 @@ import os
 import uuid
 import json
 import shutil
-from fastapi import FastAPI, UploadFile, Form, HTTPException, Response
+from fastapi import FastAPI, UploadFile, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 import boto3
@@ -10,7 +10,7 @@ from botocore.exceptions import NoCredentialsError, ClientError
 
 # === S3 CONFIG ===
 S3_BUCKET = "idd-processor-bucket"
-S3_REGION = "us-east-2"  # UPDATED TO MATCH YOUR REAL BUCKET REGION
+S3_REGION = "us-east-2"  # MATCH YOUR ACTUAL BUCKET REGION
 AWS_ACCESS_KEY = os.getenv("AWS_ACCESS_KEY_ID")
 AWS_SECRET_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
 
@@ -54,6 +54,18 @@ def s3_key_exists(key):
             return False
         else:
             raise e
+
+def generate_presigned_url(key, expiration=3600):
+    try:
+        url = s3_client.generate_presigned_url(
+            ClientMethod="get_object",
+            Params={"Bucket": S3_BUCKET, "Key": key},
+            ExpiresIn=expiration,
+        )
+        return url
+    except Exception as e:
+        print(f"Error generating presigned URL for {key}: {e}")
+        return ""
 
 @app.post("/upload/")
 async def upload_file(
@@ -124,10 +136,10 @@ def job_status(job_id: str):
 
     if s3_key_exists(processed_key):
         status["processed_ready"] = True
-        status["processed_url"] = f"/download/{job_id}/processed"
+        status["processed_url"] = generate_presigned_url(processed_key)
     if s3_key_exists(report_key):
         status["report_ready"] = True
-        status["report_url"] = f"/download/{job_id}/report"
+        status["report_url"] = generate_presigned_url(report_key)
 
     return JSONResponse(status)
 
