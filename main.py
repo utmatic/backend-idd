@@ -114,6 +114,7 @@ async def upload_file(
     job_data = {
         "job_id": job_id,
         "input_file": f"uploads/{filename}",
+        # NOTE: output_file is kept for legacy/compat but not used for S3 storage
         "output_file": f"processed/{job_id}_processed.indd",
         "report_file": f"reports/{job_id}_hyperlink_report.txt",
         "job_type": job_type,
@@ -149,8 +150,23 @@ async def upload_file(
 
 @app.get("/job_status/{job_id}")
 def job_status(job_id: str):
-    processed_key = f"processed/{job_id}_processed.indd"
-    report_key = f"reports/{job_id}_hyperlink_report.txt"
+    # Fetch job metadata from local
+    job_path = os.path.join(JOB_DIR, f"{job_id}.json")
+    if not os.path.exists(job_path):
+        # fallback: try from S3
+        try:
+            job_obj = s3_client.get_object(Bucket=S3_BUCKET, Key=f"jobs/{job_id}.json")
+            job_data = json.loads(job_obj['Body'].read())
+        except Exception:
+            return JSONResponse({"error": "Job not found"}, status_code=404)
+    else:
+        with open(job_path, "r") as jf:
+            job_data = json.load(jf)
+
+    document_name = job_data.get("document_name", f"{job_id}_processed.indd")
+    processed_key = f"processed/{document_name}"
+    report_key = job_data.get("report_file", f"reports/{job_id}_hyperlink_report.txt")
+
     status = {
         "job_id": job_id,
         "processed_ready": False,
@@ -179,13 +195,12 @@ def download_file(job_id: str, filetype: str):
         raise HTTPException(status_code=404, detail="Job metadata not found.")
 
     if filetype == "processed":
-        key = f"processed/{job_id}_processed.indd"
-        # Use the document_name as the download filename
         filename = job_data.get("document_name", f"{job_id}_processed.indd")
+        key = f"processed/{filename}"
         media_type = "application/octet-stream"
     elif filetype == "report":
-        key = f"reports/{job_id}_hyperlink_report.txt"
-        filename = job_data.get("job_id", job_id) + "_hyperlink_report.txt"
+        key = job_data.get("report_file", f"reports/{job_id}_hyperlink_report.txt")
+        filename = os.path.basename(key)
         media_type = "text/plain"
     else:
         raise HTTPException(status_code=404, detail="Invalid file type")
