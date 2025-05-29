@@ -76,12 +76,14 @@ async def upload_file(
     base_url: str = Form(""),
     utm_source: str = Form(""),
     utm_medium: str = Form(""),
-    utm_campaign: str = Form("")
+    utm_campaign: str = Form(""),
+    document_name: str = Form("")
 ):
     """
     Accepts the new job_type (add_utm, add_links_only, add_links_with_utm).
     For add_utm: doesn't require target_formats or base_url.
     For add_links_only/add_links_with_utm: uses formats and base_url as before.
+    Accepts document_name for custom output file name.
     """
     job_id = str(uuid.uuid4())
     filename = f"{job_id}_{file.filename}"
@@ -98,6 +100,16 @@ async def upload_file(
         format_list = [fmt.strip() for fmt in re.split(r'[,\\n]+', target_formats) if fmt.strip()]
         regex_patterns = [format_to_regex(fmt) for fmt in format_list]
 
+    # Use or sanitize the custom document name, fallback to original (without extension) if empty
+    orig_ext = os.path.splitext(file.filename)[1]
+    if document_name:
+        # Only allow safe characters for filenames
+        safe_document_name = re.sub(r'[^A-Za-z0-9_\-\. ]', '_', document_name).strip()
+        if not safe_document_name.lower().endswith(orig_ext.lower()):
+            safe_document_name += orig_ext
+    else:
+        safe_document_name = f"processed_{file.filename}"
+
     # Prepare job data
     job_data = {
         "job_id": job_id,
@@ -111,7 +123,9 @@ async def upload_file(
             "utm_source": utm_source,
             "utm_medium": utm_medium,
             "utm_campaign": utm_campaign
-        }
+        },
+        "original_filename": file.filename,
+        "document_name": safe_document_name
     }
 
     job_file = os.path.join(JOB_DIR, f"{job_id}.json")
@@ -156,13 +170,22 @@ def job_status(job_id: str):
 
 @app.get("/download/{job_id}/{filetype}")
 def download_file(job_id: str, filetype: str):
+    # Fetch the job file to get the chosen document name
+    try:
+        job_key = f"jobs/{job_id}.json"
+        job_obj = s3_client.get_object(Bucket=S3_BUCKET, Key=job_key)
+        job_data = json.loads(job_obj['Body'].read())
+    except Exception as e:
+        raise HTTPException(status_code=404, detail="Job metadata not found.")
+
     if filetype == "processed":
         key = f"processed/{job_id}_processed.indd"
-        filename = f"{job_id}_processed.indd"
+        # Use the document_name as the download filename
+        filename = job_data.get("document_name", f"{job_id}_processed.indd")
         media_type = "application/octet-stream"
     elif filetype == "report":
         key = f"reports/{job_id}_hyperlink_report.txt"
-        filename = f"{job_id}_hyperlink_report.txt"
+        filename = job_data.get("job_id", job_id) + "_hyperlink_report.txt"
         media_type = "text/plain"
     else:
         raise HTTPException(status_code=404, detail="Invalid file type")
