@@ -72,7 +72,6 @@ def sanitize_filename(filename):
     # Only allow letters, numbers, dashes, underscores, dots, and spaces
     name, ext = os.path.splitext(filename)
     safe_name = re.sub(r'[^\w\-. ]+', '', name).strip()
-    # Always provide a fallback
     if not safe_name:
         safe_name = "Document"
     # Only use .indd as extension if not provided
@@ -89,7 +88,7 @@ async def upload_file(
     utm_source: str = Form(""),
     utm_medium: str = Form(""),
     utm_campaign: str = Form(""),
-    document_name: str = Form("")  # <-- NEW FIELD
+    document_name: str = Form("")
 ):
     """
     Accepts the new job_type (add_utm, add_links_only, add_links_with_utm).
@@ -122,6 +121,7 @@ async def upload_file(
     output_file_key = f"processed/{job_id}_{safe_docname}"
     report_file_key = f"reports/{job_id}_hyperlink_report.txt"
 
+    # Store output_filename for ExtendScript
     job_data = {
         "job_id": job_id,
         "input_file": f"uploads/{filename}",
@@ -135,7 +135,8 @@ async def upload_file(
             "utm_medium": utm_medium,
             "utm_campaign": utm_campaign
         },
-        "custom_filename": safe_docname  # <-- Save desired output name for use in download
+        "custom_filename": safe_docname,  # <-- Save desired output name for use in download
+        "output_filename": safe_docname   # <-- For ExtendScript
     }
 
     job_file = os.path.join(JOB_DIR, f"{job_id}.json")
