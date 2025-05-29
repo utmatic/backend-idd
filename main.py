@@ -68,17 +68,6 @@ def generate_presigned_url(key, expiration=3600):
         print(f"Error generating presigned URL for {key}: {e}")
         return ""
 
-def sanitize_filename(filename):
-    # Only allow letters, numbers, dashes, underscores, dots, and spaces
-    name, ext = os.path.splitext(filename)
-    safe_name = re.sub(r'[^\w\-. ]+', '', name).strip()
-    if not safe_name:
-        safe_name = "Document"
-    # Only use .indd as extension if not provided
-    if not ext:
-        ext = ".indd"
-    return f"{safe_name}{ext}"
-
 @app.post("/upload/")
 async def upload_file(
     file: UploadFile,
@@ -87,14 +76,12 @@ async def upload_file(
     base_url: str = Form(""),
     utm_source: str = Form(""),
     utm_medium: str = Form(""),
-    utm_campaign: str = Form(""),
-    document_name: str = Form("")
+    utm_campaign: str = Form("")
 ):
     """
     Accepts the new job_type (add_utm, add_links_only, add_links_with_utm).
     For add_utm: doesn't require target_formats or base_url.
     For add_links_only/add_links_with_utm: uses formats and base_url as before.
-    Accepts a custom document_name and uses it for output naming.
     """
     job_id = str(uuid.uuid4())
     filename = f"{job_id}_{file.filename}"
@@ -111,22 +98,12 @@ async def upload_file(
         format_list = [fmt.strip() for fmt in re.split(r'[,\\n]+', target_formats) if fmt.strip()]
         regex_patterns = [format_to_regex(fmt) for fmt in format_list]
 
-    # Use provided document_name if given, otherwise fallback to original file name (without uuid)
-    if document_name.strip():
-        safe_docname = sanitize_filename(document_name)
-    else:
-        safe_docname = sanitize_filename(file.filename)
-
-    # Use the job_id in the S3 key, but NOT in the filename the user gets
-    output_file_key = f"processed/{job_id}_{safe_docname}"
-    report_file_key = f"reports/{job_id}_hyperlink_report.txt"
-
-    # Store output_filename for ExtendScript
+    # Prepare job data
     job_data = {
         "job_id": job_id,
         "input_file": f"uploads/{filename}",
-        "output_file": output_file_key,
-        "report_file": report_file_key,
+        "output_file": f"processed/{job_id}_processed.indd",
+        "report_file": f"reports/{job_id}_hyperlink_report.txt",
         "job_type": job_type,
         "regexPatterns": regex_patterns,
         "baseURL": base_url,
@@ -134,9 +111,7 @@ async def upload_file(
             "utm_source": utm_source,
             "utm_medium": utm_medium,
             "utm_campaign": utm_campaign
-        },
-        "custom_filename": safe_docname,  # <-- Save desired output name for use in download
-        "output_filename": safe_docname   # <-- For ExtendScript
+        }
     }
 
     job_file = os.path.join(JOB_DIR, f"{job_id}.json")
@@ -160,24 +135,14 @@ async def upload_file(
 
 @app.get("/job_status/{job_id}")
 def job_status(job_id: str):
-    # Load the job data to get the correct output file name for download
-    job_json_key = f"jobs/{job_id}.json"
-    try:
-        job_json_obj = s3_client.get_object(Bucket=S3_BUCKET, Key=job_json_key)
-        job_data = json.loads(job_json_obj['Body'].read())
-        custom_filename = job_data.get("custom_filename", None)
-    except Exception:
-        custom_filename = None
-
-    processed_key = f"processed/{job_id}_{custom_filename}" if custom_filename else f"processed/{job_id}_processed.indd"
+    processed_key = f"processed/{job_id}_processed.indd"
     report_key = f"reports/{job_id}_hyperlink_report.txt"
     status = {
         "job_id": job_id,
         "processed_ready": False,
         "report_ready": False,
         "processed_url": "",
-        "report_url": "",
-        "custom_filename": custom_filename if custom_filename else ""
+        "report_url": ""
     }
 
     if s3_key_exists(processed_key):
@@ -191,22 +156,9 @@ def job_status(job_id: str):
 
 @app.get("/download/{job_id}/{filetype}")
 def download_file(job_id: str, filetype: str):
-    # Load the job data to get the correct output file name for Content-Disposition
-    job_json_key = f"jobs/{job_id}.json"
-    try:
-        job_json_obj = s3_client.get_object(Bucket=S3_BUCKET, Key=job_json_key)
-        job_data = json.loads(job_json_obj['Body'].read())
-        custom_filename = job_data.get("custom_filename", None)
-    except Exception:
-        custom_filename = None
-
     if filetype == "processed":
-        if custom_filename:
-            key = f"processed/{job_id}_{custom_filename}"
-            filename = custom_filename
-        else:
-            key = f"processed/{job_id}_processed.indd"
-            filename = f"{job_id}_processed.indd"
+        key = f"processed/{job_id}_processed.indd"
+        filename = f"{job_id}_processed.indd"
         media_type = "application/octet-stream"
     elif filetype == "report":
         key = f"reports/{job_id}_hyperlink_report.txt"
