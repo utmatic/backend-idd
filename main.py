@@ -49,14 +49,11 @@ def format_to_regex(format_string):
 def s3_key_exists(key):
     try:
         s3_client.head_object(Bucket=S3_BUCKET, Key=key)
-        print(f"[DEBUG] S3 key exists: {key}")
         return True
     except ClientError as e:
         if e.response['Error']['Code'] == "404":
-            print(f"[DEBUG] S3 key does NOT exist: {key}")
             return False
         else:
-            print(f"[DEBUG] S3 key check error for {key}: {e}")
             raise e
 
 def generate_presigned_url(key, expiration=3600):
@@ -66,10 +63,9 @@ def generate_presigned_url(key, expiration=3600):
             Params={"Bucket": S3_BUCKET, "Key": key},
             ExpiresIn=expiration,
         )
-        print(f"[DEBUG] Generated presigned URL for {key}")
         return url
     except Exception as e:
-        print(f"[DEBUG] Error generating presigned URL for {key}: {e}")
+        print(f"Error generating presigned URL for {key}: {e}")
         return ""
 
 @app.post("/upload/")
@@ -80,14 +76,12 @@ async def upload_file(
     base_url: str = Form(""),
     utm_source: str = Form(""),
     utm_medium: str = Form(""),
-    utm_campaign: str = Form(""),
-    document_name: str = Form("")
+    utm_campaign: str = Form("")
 ):
     """
     Accepts the new job_type (add_utm, add_links_only, add_links_with_utm).
     For add_utm: doesn't require target_formats or base_url.
     For add_links_only/add_links_with_utm: uses formats and base_url as before.
-    Accepts document_name for custom output file name.
     """
     job_id = str(uuid.uuid4())
     filename = f"{job_id}_{file.filename}"
@@ -104,16 +98,6 @@ async def upload_file(
         format_list = [fmt.strip() for fmt in re.split(r'[,\\n]+', target_formats) if fmt.strip()]
         regex_patterns = [format_to_regex(fmt) for fmt in format_list]
 
-    # Use or sanitize the custom document name, fallback to original (without extension) if empty
-    orig_ext = os.path.splitext(file.filename)[1]
-    if document_name:
-        # Only allow safe characters for filenames
-        safe_document_name = re.sub(r'[^A-Za-z0-9_\-\. ]', '_', document_name).strip()
-        if not safe_document_name.lower().endswith(orig_ext.lower()):
-            safe_document_name += orig_ext
-    else:
-        safe_document_name = f"processed_{file.filename}"
-
     # Prepare job data
     job_data = {
         "job_id": job_id,
@@ -127,63 +111,32 @@ async def upload_file(
             "utm_source": utm_source,
             "utm_medium": utm_medium,
             "utm_campaign": utm_campaign
-        },
-        "original_filename": file.filename,
-        "document_name": safe_document_name
+        }
     }
 
     job_file = os.path.join(JOB_DIR, f"{job_id}.json")
     with open(job_file, "w") as jf:
         json.dump(job_data, jf, indent=2)
 
-    # DEBUG PRINT: Show the job JSON that will be uploaded
-    print("[DEBUG] Job JSON to be uploaded:")
-    print(json.dumps(job_data, indent=2))
-
     # Upload to S3
     try:
         s3_client.upload_file(upload_path, S3_BUCKET, job_data["input_file"])
-        print(f"[DEBUG] Uploaded input file to S3: {job_data['input_file']}")
         s3_client.upload_file(job_file, S3_BUCKET, f"jobs/{job_id}.json")
-        print(f"[DEBUG] Uploaded job JSON to S3: jobs/{job_id}.json")
     except NoCredentialsError:
-        print("[DEBUG] AWS credentials not configured properly.")
         return JSONResponse({"error": "AWS credentials not configured properly."}, status_code=500)
     except Exception as e:
-        print(f"[DEBUG] Error uploading to S3: {e}")
         return JSONResponse({"error": str(e)}, status_code=500)
 
     # Return job ID so client can poll for results
     return JSONResponse({
         "message": "File received and uploaded to S3. Processing will start shortly.",
-        "job_id": job_id,
-        "job_json": job_data  # For extra debug info
+        "job_id": job_id
     })
 
 @app.get("/job_status/{job_id}")
 def job_status(job_id: str):
-    # Fetch job metadata from local
-    job_path = os.path.join(JOB_DIR, f"{job_id}.json")
-    if not os.path.exists(job_path):
-        # fallback: try from S3
-        try:
-            job_obj = s3_client.get_object(Bucket=S3_BUCKET, Key=f"jobs/{job_id}.json")
-            job_data = json.loads(job_obj['Body'].read())
-            print("[DEBUG] Loaded job JSON from S3 for job_status:")
-            print(json.dumps(job_data, indent=2))
-        except Exception as e:
-            print(f"[DEBUG] Could not load job JSON for job_status: {e}")
-            return JSONResponse({"error": "Job not found"}, status_code=404)
-    else:
-        with open(job_path, "r") as jf:
-            job_data = json.load(jf)
-            print("[DEBUG] Loaded job JSON from local disk for job_status:")
-            print(json.dumps(job_data, indent=2))
-
-    document_name = job_data.get("document_name", f"{job_id}_processed.indd")
-    processed_key = f"processed/{document_name}"
-    report_key = job_data.get("report_file", f"reports/{job_id}_hyperlink_report.txt")
-
+    processed_key = f"processed/{job_id}_processed.indd"
+    report_key = f"reports/{job_id}_hyperlink_report.txt"
     status = {
         "job_id": job_id,
         "processed_ready": False,
@@ -199,38 +152,23 @@ def job_status(job_id: str):
         status["report_ready"] = True
         status["report_url"] = generate_presigned_url(report_key)
 
-    print(f"[DEBUG] job_status response: {json.dumps(status, indent=2)}")
     return JSONResponse(status)
 
 @app.get("/download/{job_id}/{filetype}")
 def download_file(job_id: str, filetype: str):
-    # Fetch the job file to get the chosen document name
-    try:
-        job_key = f"jobs/{job_id}.json"
-        job_obj = s3_client.get_object(Bucket=S3_BUCKET, Key=job_key)
-        job_data = json.loads(job_obj['Body'].read())
-        print("[DEBUG] Loaded job JSON from S3 for download:")
-        print(json.dumps(job_data, indent=2))
-    except Exception as e:
-        print(f"[DEBUG] Could not load job JSON for download: {e}")
-        raise HTTPException(status_code=404, detail="Job metadata not found.")
-
     if filetype == "processed":
-        filename = job_data.get("document_name", f"{job_id}_processed.indd")
-        key = f"processed/{filename}"
+        key = f"processed/{job_id}_processed.indd"
+        filename = f"{job_id}_processed.indd"
         media_type = "application/octet-stream"
     elif filetype == "report":
-        key = job_data.get("report_file", f"reports/{job_id}_hyperlink_report.txt")
-        filename = os.path.basename(key)
+        key = f"reports/{job_id}_hyperlink_report.txt"
+        filename = f"{job_id}_hyperlink_report.txt"
         media_type = "text/plain"
     else:
-        print(f"[DEBUG] Invalid filetype requested: {filetype}")
         raise HTTPException(status_code=404, detail="Invalid file type")
 
-    print(f"[DEBUG] Attempting to download from S3: {key} (filename: {filename})")
     try:
         s3_response = s3_client.get_object(Bucket=S3_BUCKET, Key=key)
-        print(f"[DEBUG] S3 file stream acquired for {key}")
         return StreamingResponse(
             s3_response["Body"],
             media_type=media_type,
@@ -238,8 +176,6 @@ def download_file(job_id: str, filetype: str):
         )
     except ClientError as e:
         if e.response['Error']['Code'] == "NoSuchKey":
-            print(f"[DEBUG] S3 Key not found: {key}")
             raise HTTPException(status_code=404, detail="File not found.")
         else:
-            print(f"[DEBUG] Unknown S3 error: {e}")
             raise HTTPException(status_code=500, detail="S3 error.")
