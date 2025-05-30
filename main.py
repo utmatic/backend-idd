@@ -79,6 +79,13 @@ def get_unique_s3_key(directory, filename):
         n += 1
     return candidate
 
+def strip_extension(filename):
+    base, ext = os.path.splitext(filename)
+    # Remove trailing dot if present (e.g., "test." becomes "test")
+    if base.endswith('.'):
+        base = base[:-1]
+    return base
+
 @app.post("/upload/")
 async def upload_file(
     file: UploadFile,
@@ -109,11 +116,14 @@ async def upload_file(
         format_list = [fmt.strip() for fmt in re.split(r'[,\\n]+', target_formats) if fmt.strip()]
         regex_patterns = [format_to_regex(fmt) for fmt in format_list]
 
+    # Always strip the extension for output and report filenames
+    base_filename = strip_extension(unique_filename)
+
     # Prepare job data
     job_data = {
         "input_file": f"uploads/{unique_filename}",
-        "output_file": f"processed/{unique_filename}_processed.indd",
-        "report_file": f"reports/{unique_filename}_report.txt",
+        "output_file": f"processed/{base_filename}_processed.indd",
+        "report_file": f"reports/{base_filename}_report.txt",
         "job_type": job_type,
         "regexPatterns": regex_patterns,
         "baseURL": base_url,
@@ -137,14 +147,15 @@ async def upload_file(
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
 
-    # Return filename so client can poll for results
+    # Return base_filename so client can poll for results (keep file_name as unique_filename for legacy, but use base_filename for output)
     return JSONResponse({
         "message": "File received and uploaded to S3. Processing will start shortly.",
-        "file_name": unique_filename
+        "file_name": base_filename
     })
 
 @app.get("/job_status/{file_name}")
 def job_status(file_name: str):
+    # Always use the stripped file_name (no extension)
     processed_key = f"processed/{file_name}_processed.indd"
     report_key = f"reports/{file_name}_report.txt"
     status = {
@@ -166,13 +177,15 @@ def job_status(file_name: str):
 
 @app.get("/download/{file_name}/{filetype}")
 def download_file(file_name: str, filetype: str):
+    # Always use the stripped file_name (no extension)
+    base_name = strip_extension(file_name)
     if filetype == "processed":
-        key = f"processed/{file_name}_processed.indd"
-        filename = f"{file_name}_processed.indd"
+        key = f"processed/{base_name}_processed.indd"
+        filename = f"{base_name}_processed.indd"
         media_type = "application/octet-stream"
     elif filetype == "report":
-        key = f"reports/{file_name}_report.txt"
-        filename = f"{file_name}_report.txt"
+        key = f"reports/{base_name}_report.txt"
+        filename = f"{base_name}_report.txt"
         media_type = "text/plain"
     else:
         raise HTTPException(status_code=404, detail="Invalid file type")
