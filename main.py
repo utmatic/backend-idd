@@ -70,16 +70,19 @@ def generate_presigned_url(key, expiration=3600):
         return ""
 
 def get_job_json_from_s3(job_id):
-    key = f"jobs/{job_id}.json"
-    try:
-        with NamedTemporaryFile(delete=False) as tmpfile:
-            s3_client.download_file(S3_BUCKET, key, tmpfile.name)
-            tmpfile.seek(0)
-            job_data = json.load(tmpfile)
-        return job_data
-    except Exception as e:
-        print(f"Error fetching job JSON from S3: {e}")
-        return None
+    # Try both jobs/ and jobs/processed/
+    for prefix in ["jobs/", "jobs/processed/"]:
+        key = f"{prefix}{job_id}.json"
+        try:
+            with NamedTemporaryFile(delete=False) as tmpfile:
+                s3_client.download_file(S3_BUCKET, key, tmpfile.name)
+                tmpfile.seek(0)
+                job_data = json.load(tmpfile)
+            return job_data
+        except Exception:
+            continue  # Try next prefix
+    print(f"Error fetching job JSON from S3 for job_id={job_id}: Not found in jobs/ or jobs/processed/")
+    return None
 
 @app.post("/upload/")
 async def upload_file(
