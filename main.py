@@ -127,15 +127,12 @@ async def upload_file(
         "job_type": job_type,
         "regexPatterns": regex_patterns,
         "baseURL": base_url,
-    }
-
-    # Only include utmParams for job types that need it
-    if job_type in ["add_links_with_utm", "add_utm"]:
-        job_data["utmParams"] = {
+        "utmParams": {
             "utm_source": utm_source,
             "utm_medium": utm_medium,
             "utm_campaign": utm_campaign
         }
+    }
 
     job_file = os.path.join(JOB_DIR, f"{unique_filename}.json")
     with open(job_file, "w") as jf:
