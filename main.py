@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 import boto3
 from botocore.exceptions import NoCredentialsError, ClientError
+from tempfile import NamedTemporaryFile
 
 # === S3 CONFIG ===
 S3_BUCKET = "idd-processor-bucket"
@@ -68,6 +69,18 @@ def generate_presigned_url(key, expiration=3600):
         print(f"Error generating presigned URL for {key}: {e}")
         return ""
 
+def get_job_json_from_s3(job_id):
+    key = f"jobs/{job_id}.json"
+    try:
+        with NamedTemporaryFile(delete=False) as tmpfile:
+            s3_client.download_file(S3_BUCKET, key, tmpfile.name)
+            tmpfile.seek(0)
+            job_data = json.load(tmpfile)
+        return job_data
+    except Exception as e:
+        print(f"Error fetching job JSON from S3: {e}")
+        return None
+
 @app.post("/upload/")
 async def upload_file(
     file: UploadFile,
@@ -84,7 +97,9 @@ async def upload_file(
     For add_links_only/add_links_with_utm: uses formats and base_url as before.
     """
     job_id = str(uuid.uuid4())
-    filename = f"{job_id}_{file.filename}"
+    # Save original filename for reference in download step
+    original_filename = file.filename
+    filename = f"{job_id}_{original_filename}"
     upload_path = os.path.join(UPLOAD_DIR, filename)
 
     # Save file locally
@@ -111,7 +126,8 @@ async def upload_file(
             "utm_source": utm_source,
             "utm_medium": utm_medium,
             "utm_campaign": utm_campaign
-        }
+        },
+        "original_filename": original_filename
     }
 
     job_file = os.path.join(JOB_DIR, f"{job_id}.json")
@@ -156,13 +172,25 @@ def job_status(job_id: str):
 
 @app.get("/download/{job_id}/{filetype}")
 def download_file(job_id: str, filetype: str):
+    # Fetch job JSON from S3 to get the original filename
+    job_data = get_job_json_from_s3(job_id)
+    if not job_data:
+        raise HTTPException(status_code=404, detail="Job metadata not found.")
+
+    original_filename = job_data.get("original_filename", f"{job_id}_original.indd")
+
+    # Helper to insert _processed before extension
+    def make_processed_filename(filename):
+        name, ext = os.path.splitext(filename)
+        return f"{name}_processed{ext}"
+
     if filetype == "processed":
         key = f"processed/{job_id}_processed.indd"
-        filename = f"{job_id}_processed.indd"
+        filename = make_processed_filename(original_filename)
         media_type = "application/octet-stream"
     elif filetype == "report":
         key = f"reports/{job_id}_hyperlink_report.txt"
-        filename = f"{job_id}_hyperlink_report.txt"
+        filename = f"{os.path.splitext(original_filename)[0]}_hyperlink_report.txt"
         media_type = "text/plain"
     else:
         raise HTTPException(status_code=404, detail="Invalid file type")
