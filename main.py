@@ -1,5 +1,4 @@
 import os
-import uuid
 import json
 import shutil
 import re
@@ -11,7 +10,7 @@ from botocore.exceptions import NoCredentialsError, ClientError
 
 # === S3 CONFIG ===
 S3_BUCKET = "idd-processor-bucket"
-S3_REGION = "us-east-2"  # MATCH YOUR ACTUAL BUCKET REGION
+S3_REGION = "us-east-2"
 AWS_ACCESS_KEY = os.getenv("AWS_ACCESS_KEY_ID")
 AWS_SECRET_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
 
@@ -68,6 +67,18 @@ def generate_presigned_url(key, expiration=3600):
         print(f"Error generating presigned URL for {key}: {e}")
         return ""
 
+def get_unique_s3_key(directory, filename):
+    """
+    If filename exists in S3 under directory, append _1, _2, etc. before the extension.
+    """
+    name, ext = os.path.splitext(filename)
+    candidate = filename
+    n = 1
+    while s3_key_exists(f"{directory}/{candidate}"):
+        candidate = f"{name}_{n}{ext}"
+        n += 1
+    return candidate
+
 @app.post("/upload/")
 async def upload_file(
     file: UploadFile,
@@ -83,9 +94,10 @@ async def upload_file(
     For add_utm: doesn't require target_formats or base_url.
     For add_links_only/add_links_with_utm: uses formats and base_url as before.
     """
-    job_id = str(uuid.uuid4())
-    filename = f"{job_id}_{file.filename}"
-    upload_path = os.path.join(UPLOAD_DIR, filename)
+
+    # Get a unique filename for S3 (avoid collisions)
+    unique_filename = get_unique_s3_key("uploads", file.filename)
+    upload_path = os.path.join(UPLOAD_DIR, unique_filename)
 
     # Save file locally
     with open(upload_path, "wb") as buffer:
@@ -94,16 +106,14 @@ async def upload_file(
     # --- Parse target_formats only if needed
     format_list, regex_patterns = [], []
     if job_type in ["add_links_only", "add_links_with_utm"]:
-        # Accept input like "PDF, IDML, TXT" or "PDF\nIDML\nTXT" or any mix
         format_list = [fmt.strip() for fmt in re.split(r'[,\\n]+', target_formats) if fmt.strip()]
         regex_patterns = [format_to_regex(fmt) for fmt in format_list]
 
     # Prepare job data
     job_data = {
-        "job_id": job_id,
-        "input_file": f"uploads/{filename}",
-        "output_file": f"processed/{job_id}_processed.indd",
-        "report_file": f"reports/{job_id}_hyperlink_report.txt",
+        "input_file": f"uploads/{unique_filename}",
+        "output_file": f"processed/{unique_filename}_processed.indd",
+        "report_file": f"reports/{unique_filename}_report.txt",
         "job_type": job_type,
         "regexPatterns": regex_patterns,
         "baseURL": base_url,
@@ -114,31 +124,31 @@ async def upload_file(
         }
     }
 
-    job_file = os.path.join(JOB_DIR, f"{job_id}.json")
+    job_file = os.path.join(JOB_DIR, f"{unique_filename}.json")
     with open(job_file, "w") as jf:
         json.dump(job_data, jf, indent=2)
 
     # Upload to S3
     try:
         s3_client.upload_file(upload_path, S3_BUCKET, job_data["input_file"])
-        s3_client.upload_file(job_file, S3_BUCKET, f"jobs/{job_id}.json")
+        s3_client.upload_file(job_file, S3_BUCKET, f"jobs/{unique_filename}.json")
     except NoCredentialsError:
         return JSONResponse({"error": "AWS credentials not configured properly."}, status_code=500)
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
 
-    # Return job ID so client can poll for results
+    # Return filename so client can poll for results
     return JSONResponse({
         "message": "File received and uploaded to S3. Processing will start shortly.",
-        "job_id": job_id
+        "file_name": unique_filename
     })
 
-@app.get("/job_status/{job_id}")
-def job_status(job_id: str):
-    processed_key = f"processed/{job_id}_processed.indd"
-    report_key = f"reports/{job_id}_hyperlink_report.txt"
+@app.get("/job_status/{file_name}")
+def job_status(file_name: str):
+    processed_key = f"processed/{file_name}_processed.indd"
+    report_key = f"reports/{file_name}_report.txt"
     status = {
-        "job_id": job_id,
+        "file_name": file_name,
         "processed_ready": False,
         "report_ready": False,
         "processed_url": "",
@@ -154,15 +164,15 @@ def job_status(job_id: str):
 
     return JSONResponse(status)
 
-@app.get("/download/{job_id}/{filetype}")
-def download_file(job_id: str, filetype: str):
+@app.get("/download/{file_name}/{filetype}")
+def download_file(file_name: str, filetype: str):
     if filetype == "processed":
-        key = f"processed/{job_id}_processed.indd"
-        filename = f"{job_id}_processed.indd"
+        key = f"processed/{file_name}_processed.indd"
+        filename = f"{file_name}_processed.indd"
         media_type = "application/octet-stream"
     elif filetype == "report":
-        key = f"reports/{job_id}_hyperlink_report.txt"
-        filename = f"{job_id}_hyperlink_report.txt"
+        key = f"reports/{file_name}_report.txt"
+        filename = f"{file_name}_report.txt"
         media_type = "text/plain"
     else:
         raise HTTPException(status_code=404, detail="Invalid file type")
