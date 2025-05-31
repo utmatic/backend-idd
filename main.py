@@ -119,7 +119,7 @@ async def upload_file(
     # Always strip the extension for output and report filenames
     base_filename = strip_extension(unique_filename)
 
-    # Prepare job data (utmParams only added for jobs that need it)
+    # Prepare job data
     job_data = {
         "input_file": f"uploads/{unique_filename}",
         "output_file": f"processed/{base_filename}_processed.indd",
@@ -127,15 +127,12 @@ async def upload_file(
         "job_type": job_type,
         "regexPatterns": regex_patterns,
         "baseURL": base_url,
-    }
-
-    # Only include utmParams for job types that need UTM
-    if job_type in ["add_links_with_utm", "add_utm"]:
-        job_data["utmParams"] = {
+        "utmParams": {
             "utm_source": utm_source,
             "utm_medium": utm_medium,
             "utm_campaign": utm_campaign
         }
+    }
 
     job_file = os.path.join(JOB_DIR, f"{unique_filename}.json")
     with open(job_file, "w") as jf:
