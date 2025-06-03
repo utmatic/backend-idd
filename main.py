@@ -241,3 +241,34 @@ def download_file(file_name: str, filetype: str):
             raise HTTPException(status_code=404, detail="File not found.")
         else:
             raise HTTPException(status_code=500, detail="S3 error.")
+
+# === NEW: Endpoint to get recent jobs for dashboard/history ===
+from fastapi.encoders import jsonable_encoder
+from datetime import datetime
+
+@app.get("/jobs")
+def list_jobs():
+    jobs_ref = db.collection('inddJobs').order_by("completedAt", direction=firestore.Query.DESCENDING).limit(50)
+    docs = jobs_ref.stream()
+    jobs = []
+    for doc in docs:
+        data = doc.to_dict()
+        # Convert Firestore timestamp to ISO (if exists)
+        completed_at = data.get("completedAt")
+        if completed_at:
+            # Firestore timestamp has .isoformat()
+            try:
+                date_str = completed_at.isoformat()
+            except Exception:
+                date_str = str(completed_at)
+        else:
+            date_str = ""
+        jobs.append({
+            "date": date_str,
+            "filetype": "INDD",
+            "document": data.get("file_name", ""),
+            "jobtype": data.get("job_type", ""),
+            "processedUrl": data.get("processed_url", ""),
+            "changelogUrl": data.get("report_url", ""),
+        })
+    return JSONResponse(content=jsonable_encoder(jobs))
