@@ -2,3 +2,7 @@ fastapi
 uvicorn
 python-multipart
 boto3
+firebase-admin
+pydantic
+requests
+gunicorn
