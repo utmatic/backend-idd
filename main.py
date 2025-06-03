@@ -8,6 +8,30 @@ from fastapi.responses import JSONResponse, StreamingResponse
 import boto3
 from botocore.exceptions import NoCredentialsError, ClientError
 
+# === FIREBASE ADMIN INIT (ENV VARS) ===
+import firebase_admin
+from firebase_admin import credentials, firestore
+
+# Build service account dict from environment variables
+def get_firebase_cred_from_env():
+    return {
+        "type": os.getenv("FIREBASE_TYPE"),
+        "project_id": os.getenv("FIREBASE_PROJECT_ID"),
+        "private_key_id": os.getenv("FIREBASE_PRIVATE_KEY_ID"),
+        "private_key": os.getenv("FIREBASE_PRIVATE_KEY").replace("\\n", "\n"),
+        "client_email": os.getenv("FIREBASE_CLIENT_EMAIL"),
+        "client_id": os.getenv("FIREBASE_CLIENT_ID"),
+        "auth_uri": os.getenv("FIREBASE_AUTH_URI"),
+        "token_uri": os.getenv("FIREBASE_TOKEN_URI"),
+        "auth_provider_x509_cert_url": os.getenv("FIREBASE_AUTH_PROVIDER_CERT_URL"),
+        "client_x509_cert_url": os.getenv("FIREBASE_CLIENT_CERT_URL")
+    }
+
+firebase_cred_dict = get_firebase_cred_from_env()
+cred = credentials.Certificate(firebase_cred_dict)
+firebase_admin.initialize_app(cred)
+db = firestore.client()
+
 # === S3 CONFIG ===
 S3_BUCKET = "idd-processor-bucket"
 S3_REGION = "us-east-2"
@@ -86,6 +110,17 @@ def strip_extension(filename):
         base = base[:-1]
     return base
 
+def save_job_to_firestore(job_data):
+    # job_data = dict with your job info (should contain 'jobId' at minimum)
+    # The collection is called 'inddJobs'
+    job_id = job_data.get('jobId') or job_data.get('file_name') or job_data.get('input_file') or "unknown"
+    # Use file_name (base_filename) as unique ID if available
+    doc_id = job_id
+    db.collection('inddJobs').document(str(doc_id)).set({
+        **job_data,
+        'completedAt': firestore.SERVER_TIMESTAMP
+    })
+
 @app.post("/upload/")
 async def upload_file(
     file: UploadFile,
@@ -131,7 +166,9 @@ async def upload_file(
             "utm_source": utm_source,
             "utm_medium": utm_medium,
             "utm_campaign": utm_campaign
-        }
+        },
+        "file_name": base_filename,
+        "jobId": base_filename  # use base_filename as jobId for Firestore
     }
 
     job_file = os.path.join(JOB_DIR, f"{unique_filename}.json")
@@ -146,6 +183,13 @@ async def upload_file(
         return JSONResponse({"error": "AWS credentials not configured properly."}, status_code=500)
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
+
+    # --- Save job info to Firestore ---
+    try:
+        save_job_to_firestore(job_data)
+    except Exception as e:
+        # Log error but don't block job creation
+        print(f"Error saving job to Firestore: {e}")
 
     # Return base_filename so client can poll for results (keep file_name as unique_filename for legacy, but use base_filename for output)
     return JSONResponse({
