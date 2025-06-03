@@ -116,6 +116,9 @@ def get_current_user(request: Request):
 def save_job_to_firestore(job_data):
     job_id = job_data.get('jobId') or job_data.get('file_name') or job_data.get('input_file') or "unknown"
     doc_id = job_id
+    # Patch for legacy jobs: always ensure userId is present on the document!
+    if "userId" not in job_data or not job_data["userId"]:
+        job_data["userId"] = job_data.get("user_id") or "unknown"
     db.collection('inddJobs').document(str(doc_id)).set({
         **job_data,
         'completedAt': firestore.SERVER_TIMESTAMP
@@ -274,3 +277,21 @@ def list_jobs(request: Request, user_id: str = Depends(get_current_user)):
             "changelogUrl": data.get("report_url", ""),
         })
     return JSONResponse(content=jsonable_encoder(jobs))
+
+
+# === Utility: PATCH all legacy jobs to add userId ===
+@app.post("/patch_legacy_jobs")
+def patch_legacy_jobs(request: Request, user_id: str = Depends(get_current_user)):
+    """
+    Utility endpoint: Add a userId to all legacy jobs missing it, owned by the current user.
+    This is a one-time batch fix for Firestore data.
+    """
+    updated = 0
+    jobs_ref = db.collection('inddJobs')
+    docs = jobs_ref.stream()
+    for doc in docs:
+        data = doc.to_dict()
+        if "userId" not in data or not data["userId"]:
+            doc.reference.update({"userId": user_id})
+            updated += 1
+    return JSONResponse({"patched_docs": updated})
