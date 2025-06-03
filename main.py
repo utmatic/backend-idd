@@ -8,27 +8,18 @@ from fastapi.responses import JSONResponse, StreamingResponse
 import boto3
 from botocore.exceptions import NoCredentialsError, ClientError
 
-# === FIREBASE ADMIN INIT (ENV VARS) ===
+# === FIREBASE ADMIN INIT (USE SINGLE ENV VARIABLE) ===
 import firebase_admin
 from firebase_admin import credentials, firestore
 
-# Build service account dict from environment variables
-def get_firebase_cred_from_env():
-    return {
-        "type": os.getenv("FIREBASE_TYPE"),
-        "project_id": os.getenv("FIREBASE_PROJECT_ID"),
-        "private_key_id": os.getenv("FIREBASE_PRIVATE_KEY_ID"),
-        "private_key": os.getenv("FIREBASE_PRIVATE_KEY").replace("\\n", "\n"),
-        "client_email": os.getenv("FIREBASE_CLIENT_EMAIL"),
-        "client_id": os.getenv("FIREBASE_CLIENT_ID"),
-        "auth_uri": os.getenv("FIREBASE_AUTH_URI"),
-        "token_uri": os.getenv("FIREBASE_TOKEN_URI"),
-        "auth_provider_x509_cert_url": os.getenv("FIREBASE_AUTH_PROVIDER_CERT_URL"),
-        "client_x509_cert_url": os.getenv("FIREBASE_CLIENT_CERT_URL")
-    }
+def get_firebase_cred_from_json_env():
+    json_str = os.getenv("GOOGLE_APPLICATION_CREDENTIALS_JSON")
+    if not json_str:
+        raise RuntimeError("GOOGLE_APPLICATION_CREDENTIALS_JSON env variable not set.")
+    cred_dict = json.loads(json_str)
+    return credentials.Certificate(cred_dict)
 
-firebase_cred_dict = get_firebase_cred_from_env()
-cred = credentials.Certificate(firebase_cred_dict)
+cred = get_firebase_cred_from_json_env()
 firebase_admin.initialize_app(cred)
 db = firestore.client()
 
@@ -114,7 +105,6 @@ def save_job_to_firestore(job_data):
     # job_data = dict with your job info (should contain 'jobId' at minimum)
     # The collection is called 'inddJobs'
     job_id = job_data.get('jobId') or job_data.get('file_name') or job_data.get('input_file') or "unknown"
-    # Use file_name (base_filename) as unique ID if available
     doc_id = job_id
     db.collection('inddJobs').document(str(doc_id)).set({
         **job_data,
