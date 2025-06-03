@@ -174,7 +174,12 @@ async def upload_file(
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
 
-    # --- Save job info to Firestore ---
+    # --- Generate download links and save job info to Firestore ---
+    processed_url = generate_presigned_url(f"processed/{base_filename}_processed.indd")
+    report_url = generate_presigned_url(f"reports/{base_filename}_report.txt")
+    job_data["processed_url"] = processed_url
+    job_data["report_url"] = report_url
+
     try:
         save_job_to_firestore(job_data)
     except Exception as e:
