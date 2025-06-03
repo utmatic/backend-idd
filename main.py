@@ -2,7 +2,7 @@ import os
 import json
 import shutil
 import re
-from fastapi import FastAPI, UploadFile, Form, HTTPException
+from fastapi import FastAPI, UploadFile, Form, HTTPException, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 import boto3
@@ -10,7 +10,7 @@ from botocore.exceptions import NoCredentialsError, ClientError
 
 # === FIREBASE ADMIN INIT (USE SINGLE ENV VARIABLE) ===
 import firebase_admin
-from firebase_admin import credentials, firestore
+from firebase_admin import credentials, firestore, auth as firebase_auth
 
 def get_firebase_cred_from_json_env():
     json_str = os.getenv("GOOGLE_APPLICATION_CREDENTIALS_JSON")
@@ -101,6 +101,17 @@ def strip_extension(filename):
         base = base[:-1]
     return base
 
+def get_current_user(request: Request):
+    auth_header = request.headers.get("Authorization")
+    if not auth_header or not auth_header.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing auth token")
+    id_token = auth_header.split("Bearer ")[1]
+    try:
+        decoded = firebase_auth.verify_id_token(id_token)
+        return decoded["uid"]
+    except Exception:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
 def save_job_to_firestore(job_data):
     # job_data = dict with your job info (should contain 'jobId' at minimum)
     # The collection is called 'inddJobs'
@@ -113,6 +124,7 @@ def save_job_to_firestore(job_data):
 
 @app.post("/upload/")
 async def upload_file(
+    request: Request,
     file: UploadFile,
     job_type: str = Form(...),
     target_formats: str = Form(""),
@@ -126,6 +138,8 @@ async def upload_file(
     For add_utm: doesn't require target_formats or base_url.
     For add_links_only/add_links_with_utm: uses formats and base_url as before.
     """
+    # --- Authenticate User ---
+    user_id = get_current_user(request)
 
     # Get a unique filename for S3 (avoid collisions)
     unique_filename = get_unique_s3_key("uploads", file.filename)
@@ -158,7 +172,8 @@ async def upload_file(
             "utm_campaign": utm_campaign
         },
         "file_name": base_filename,
-        "jobId": base_filename  # use base_filename as jobId for Firestore
+        "jobId": base_filename,  # use base_filename as jobId for Firestore
+        "userId": user_id        # store user ID
     }
 
     job_file = os.path.join(JOB_DIR, f"{unique_filename}.json")
@@ -242,13 +257,13 @@ def download_file(file_name: str, filetype: str):
         else:
             raise HTTPException(status_code=500, detail="S3 error.")
 
-# === NEW: Endpoint to get recent jobs for dashboard/history ===
+# === Endpoint to get recent jobs for dashboard/history (per user, requires auth) ===
 from fastapi.encoders import jsonable_encoder
 from datetime import datetime
 
 @app.get("/jobs")
-def list_jobs():
-    jobs_ref = db.collection('inddJobs').order_by("completedAt", direction=firestore.Query.DESCENDING).limit(50)
+def list_jobs(request: Request, user_id: str = Depends(get_current_user)):
+    jobs_ref = db.collection('inddJobs').where("userId", "==", user_id).order_by("completedAt", direction=firestore.Query.DESCENDING).limit(50)
     docs = jobs_ref.stream()
     jobs = []
     for doc in docs:
