@@ -42,9 +42,10 @@ JOB_DIR = "jobs"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(JOB_DIR, exist_ok=True)
 
+# === CORS FIX: allow only your frontend origin, not "*" ===
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["https://app.utmatic.com"],  # Only allow your frontend
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -113,8 +114,6 @@ def get_current_user(request: Request):
         raise HTTPException(status_code=401, detail="Invalid token")
 
 def save_job_to_firestore(job_data):
-    # job_data = dict with your job info (should contain 'jobId' at minimum)
-    # The collection is called 'inddJobs'
     job_id = job_data.get('jobId') or job_data.get('file_name') or job_data.get('input_file') or "unknown"
     doc_id = job_id
     db.collection('inddJobs').document(str(doc_id)).set({
@@ -133,12 +132,6 @@ async def upload_file(
     utm_medium: str = Form(""),
     utm_campaign: str = Form("")
 ):
-    """
-    Accepts the new job_type (add_utm, add_links_only, add_links_with_utm).
-    For add_utm: doesn't require target_formats or base_url.
-    For add_links_only/add_links_with_utm: uses formats and base_url as before.
-    """
-    # --- Authenticate User ---
     user_id = get_current_user(request)
 
     # Get a unique filename for S3 (avoid collisions)
@@ -198,10 +191,8 @@ async def upload_file(
     try:
         save_job_to_firestore(job_data)
     except Exception as e:
-        # Log error but don't block job creation
         print(f"Error saving job to Firestore: {e}")
 
-    # Return base_filename so client can poll for results (keep file_name as unique_filename for legacy, but use base_filename for output)
     return JSONResponse({
         "message": "File received and uploaded to S3. Processing will start shortly.",
         "file_name": base_filename
@@ -209,7 +200,6 @@ async def upload_file(
 
 @app.get("/job_status/{file_name}")
 def job_status(file_name: str):
-    # Always use the stripped file_name (no extension)
     processed_key = f"processed/{file_name}_processed.indd"
     report_key = f"reports/{file_name}_report.txt"
     status = {
@@ -231,7 +221,6 @@ def job_status(file_name: str):
 
 @app.get("/download/{file_name}/{filetype}")
 def download_file(file_name: str, filetype: str):
-    # Always use the stripped file_name (no extension)
     base_name = strip_extension(file_name)
     if filetype == "processed":
         key = f"processed/{base_name}_processed.indd"
@@ -268,10 +257,8 @@ def list_jobs(request: Request, user_id: str = Depends(get_current_user)):
     jobs = []
     for doc in docs:
         data = doc.to_dict()
-        # Convert Firestore timestamp to ISO (if exists)
         completed_at = data.get("completedAt")
         if completed_at:
-            # Firestore timestamp has .isoformat()
             try:
                 date_str = completed_at.isoformat()
             except Exception:
