@@ -83,6 +83,10 @@ def generate_presigned_url(key, expiration=3600):
         print(f"Error generating presigned URL for {key}: {e}")
         return ""
 
+def s3_object_url(key):
+    """Return the public object URL for a file in this S3 bucket."""
+    return f"https://{S3_BUCKET}.s3.{S3_REGION}.amazonaws.com/{key}"
+
 def get_unique_s3_key(directory, filename):
     """
     If filename exists in S3 under directory, append _1, _2, etc. before the extension.
@@ -123,6 +127,26 @@ def save_job_to_firestore(job_data):
         **job_data,
         'completedAt': firestore.SERVER_TIMESTAMP
     })
+
+def extract_link_count_from_report(report_file_path, job_type):
+    """Extracts the link count from a report file depending on job_type."""
+    try:
+        with open(report_file_path, "r", encoding="utf-8") as f:
+            for line in f:
+                # For links only and links and utm jobs
+                if job_type in ("add_links_only", "add_links_with_utm", "links_only", "links_and_utm"):
+                    match = re.match(r"Total hyperlinks created:\s*(\d+)", line)
+                    if match:
+                        return int(match.group(1))
+                # For utm only jobs
+                elif job_type in ("add_utm", "utm_only"):
+                    match = re.match(r"Hyperlinks updated with UTM parameters:\s*(\d+)", line)
+                    if match:
+                        return int(match.group(1))
+        return 0
+    except Exception as e:
+        print(f"Error extracting link count from report: {e}")
+        return 0
 
 @app.post("/upload/")
 async def upload_file(
@@ -185,9 +209,24 @@ async def upload_file(
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
 
-    # --- Generate download links and save job info to Firestore ---
-    processed_url = generate_presigned_url(f"processed/{base_filename}_processed.indd")
-    report_url = generate_presigned_url(f"reports/{base_filename}_report.txt")
+    # === PATCH: Parse link count from local report before uploading to S3 and saving to Firestore ===
+    local_report_file_path = os.path.join(os.path.dirname(upload_path), f"{base_filename}_report.txt")
+    link_count = 0
+    if os.path.exists(local_report_file_path):
+        link_count = extract_link_count_from_report(local_report_file_path, job_type)
+        job_data["link_count"] = link_count
+        # Now upload the report to S3 as a real txt file (not presigned)
+        try:
+            s3_client.upload_file(local_report_file_path, S3_BUCKET, job_data["report_file"])
+        except Exception as e:
+            print(f"Error uploading report file to S3: {e}")
+    else:
+        # No report file found; link count will be 0 and report won't be uploaded
+        job_data["link_count"] = 0
+
+    # Use S3 object URLs for processed/report, not presigned URLs
+    processed_url = s3_object_url(job_data["output_file"])
+    report_url = s3_object_url(job_data["report_file"])
     job_data["processed_url"] = processed_url
     job_data["report_url"] = report_url
 
@@ -198,7 +237,8 @@ async def upload_file(
 
     return JSONResponse({
         "message": "File received and uploaded to S3. Processing will start shortly.",
-        "file_name": base_filename
+        "file_name": base_filename,
+        "link_count": link_count
     })
 
 @app.get("/job_status/{file_name}")
@@ -215,10 +255,10 @@ def job_status(file_name: str):
 
     if s3_key_exists(processed_key):
         status["processed_ready"] = True
-        status["processed_url"] = generate_presigned_url(processed_key)
+        status["processed_url"] = s3_object_url(processed_key)
     if s3_key_exists(report_key):
         status["report_ready"] = True
-        status["report_url"] = generate_presigned_url(report_key)
+        status["report_url"] = s3_object_url(report_key)
 
     return JSONResponse(status)
 
@@ -276,6 +316,7 @@ def list_jobs(request: Request, user_id: str = Depends(get_current_user)):
             "jobtype": data.get("job_type", ""),
             "processedUrl": data.get("processed_url", ""),
             "changelogUrl": data.get("report_url", ""),
+            "linkCount": data.get("link_count", 0),
         })
 
     # Fetch PDF jobs (note: uses user_uid for pdfJobs)
@@ -299,6 +340,7 @@ def list_jobs(request: Request, user_id: str = Depends(get_current_user)):
             "jobtype": data.get("job_type", ""),
             "processedUrl": data.get("processed_url", ""),
             "changelogUrl": data.get("report_url", ""),
+            "linkCount": data.get("link_count", 0),
         })
 
     # Combine and sort by date descending
