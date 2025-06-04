@@ -135,12 +135,12 @@ def extract_link_count_from_report(report_file_path, job_type):
             for line in f:
                 # For links only and links and utm jobs
                 if job_type in ("add_links_only", "add_links_with_utm", "links_only", "links_and_utm"):
-                    match = re.match(r"Total hyperlinks created:\s*(\d+)", line)
+                    match = re.search(r"Total hyperlinks created:\s*(\d+)", line)
                     if match:
                         return int(match.group(1))
                 # For utm only jobs
                 elif job_type in ("add_utm", "utm_only"):
-                    match = re.match(r"Hyperlinks updated with UTM parameters:\s*(\d+)", line)
+                    match = re.search(r"Hyperlinks updated with UTM parameters:\s*(\d+)", line)
                     if match:
                         return int(match.group(1))
         return 0
