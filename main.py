@@ -255,10 +255,11 @@ from datetime import datetime
 
 @app.get("/jobs")
 def list_jobs(request: Request, user_id: str = Depends(get_current_user)):
-    jobs_ref = db.collection('inddJobs').where("userId", "==", user_id).order_by("completedAt", direction=firestore.Query.DESCENDING).limit(50)
-    docs = jobs_ref.stream()
-    jobs = []
-    for doc in docs:
+    # Fetch INDD jobs
+    indd_jobs_ref = db.collection('inddJobs').where("userId", "==", user_id).order_by("completedAt", direction=firestore.Query.DESCENDING).limit(50)
+    indd_docs = indd_jobs_ref.stream()
+    indd_jobs = []
+    for doc in indd_docs:
         data = doc.to_dict()
         completed_at = data.get("completedAt")
         if completed_at:
@@ -268,7 +269,7 @@ def list_jobs(request: Request, user_id: str = Depends(get_current_user)):
                 date_str = str(completed_at)
         else:
             date_str = ""
-        jobs.append({
+        indd_jobs.append({
             "date": date_str,
             "filetype": "INDD",
             "document": data.get("file_name", ""),
@@ -276,7 +277,36 @@ def list_jobs(request: Request, user_id: str = Depends(get_current_user)):
             "processedUrl": data.get("processed_url", ""),
             "changelogUrl": data.get("report_url", ""),
         })
-    return JSONResponse(content=jsonable_encoder(jobs))
+
+    # Fetch PDF jobs (note: uses user_uid for pdfJobs)
+    pdf_jobs_ref = db.collection('pdfJobs').where("user_uid", "==", user_id)
+    pdf_docs = pdf_jobs_ref.stream()
+    pdf_jobs = []
+    for doc in pdf_docs:
+        data = doc.to_dict()
+        completed_at = data.get("completedAt")
+        if completed_at:
+            try:
+                date_str = completed_at.isoformat()
+            except Exception:
+                date_str = str(completed_at)
+        else:
+            date_str = ""
+        pdf_jobs.append({
+            "date": date_str,
+            "filetype": "PDF",
+            "document": data.get("file_name", ""),
+            "jobtype": data.get("job_type", ""),
+            "processedUrl": data.get("processed_url", ""),
+            "changelogUrl": data.get("report_url", ""),
+        })
+
+    # Combine and sort by date descending
+    all_jobs = indd_jobs + pdf_jobs
+    # Use empty string for missing date so sort is robust
+    all_jobs_sorted = sorted(all_jobs, key=lambda x: x["date"] or "", reverse=True)
+
+    return JSONResponse(content=jsonable_encoder(all_jobs_sorted))
 
 
 # === Utility: PATCH all legacy jobs to add userId ===
