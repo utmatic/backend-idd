@@ -367,3 +367,33 @@ def patch_legacy_jobs(request: Request, user_id: str = Depends(get_current_user)
             doc.reference.update({"userId": user_id})
             updated += 1
     return JSONResponse({"patched_docs": updated})
+
+
+# === DELETE endpoint for jobs ===
+@app.delete("/jobs/{jobtype}/{jobid}")
+def delete_job(jobtype: str, jobid: str, request: Request, user_id: str = Depends(get_current_user)):
+    """
+    Delete a processed job by type and jobId. 
+    jobtype: 'indd' or 'pdf'
+    jobid: document ID (file_name/jobId)
+    Only allows deletion if user is owner.
+    """
+    jobtype = jobtype.lower()
+    if jobtype == "indd":
+        collection = db.collection('inddJobs')
+        user_field = "userId"
+    elif jobtype == "pdf":
+        collection = db.collection('pdfJobs')
+        user_field = "user_uid"
+    else:
+        raise HTTPException(status_code=400, detail="Invalid job type")
+
+    doc_ref = collection.document(jobid)
+    doc = doc_ref.get()
+    if not doc.exists:
+        raise HTTPException(status_code=404, detail="Job not found")
+    data = doc.to_dict()
+    if data.get(user_field) != user_id:
+        raise HTTPException(status_code=403, detail="Not authorized to delete this job")
+    doc_ref.delete()
+    return JSONResponse({"message": "Job deleted successfully"})
