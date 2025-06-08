@@ -106,6 +106,14 @@ def strip_extension(filename):
         base = base[:-1]
     return base
 
+def get_client_ip(request: Request):
+    # Use X-Forwarded-For if behind proxy, else fallback to client.host
+    xff = request.headers.get("x-forwarded-for")
+    if xff:
+        # X-Forwarded-For can be a comma-separated list; take the first one
+        return xff.split(",")[0].strip()
+    return request.client.host
+
 def get_current_user(request: Request):
     auth_header = request.headers.get("Authorization")
     if not auth_header or not auth_header.startswith("Bearer "):
@@ -148,6 +156,56 @@ def extract_link_count_from_report(report_file_path, job_type):
         print(f"Error extracting link count from report: {e}")
         return 0
 
+# === Helper functions for IP/session/job enforcement ===
+
+def get_user_session_ref(user_id):
+    return db.collection("activeSessions").document(user_id)
+
+def get_active_job_ref(user_id):
+    return db.collection("activeJobs").document(user_id)
+
+def enforce_single_ip(request: Request, user_id: str):
+    client_ip = get_client_ip(request)
+    session_ref = get_user_session_ref(user_id)
+    session_doc = session_ref.get()
+    if session_doc.exists:
+        data = session_doc.to_dict()
+        stored_ip = data.get("ip")
+        if stored_ip and stored_ip != client_ip:
+            raise HTTPException(status_code=403, detail="User already logged in from another IP.")
+    # Set/update session IP
+    session_ref.set({"ip": client_ip, "lastActive": firestore.SERVER_TIMESTAMP})
+
+from datetime import datetime, timezone, timedelta
+
+def enforce_single_active_job(user_id: str):
+    job_ref = get_active_job_ref(user_id)
+    job_doc = job_ref.get()
+    if job_doc.exists:
+        data = job_doc.to_dict()
+        if data.get("active"):
+            started_at = data.get("startedAt")
+            if started_at:
+                # Firestore timestamp may need conversion
+                if hasattr(started_at, "timestamp"):
+                    started_at_dt = datetime.fromtimestamp(started_at.timestamp(), tz=timezone.utc)
+                elif isinstance(started_at, datetime):
+                    started_at_dt = started_at
+                else:
+                    started_at_dt = datetime.fromisoformat(str(started_at))
+                now = datetime.now(timezone.utc)
+                if now - started_at_dt < timedelta(minutes=10):
+                    raise HTTPException(
+                        status_code=429,
+                        detail="You already have an active job processing. Please wait until it completes (or 10 minutes timeout)."
+                    )
+    # Mark job as active (overwrite old or expired)
+    job_ref.set({"active": True, "startedAt": firestore.SERVER_TIMESTAMP})
+
+def clear_active_job(user_id: str):
+    job_ref = get_active_job_ref(user_id)
+    job_ref.delete()
+
 @app.post("/upload/")
 async def upload_file(
     request: Request,
@@ -160,6 +218,10 @@ async def upload_file(
     utm_campaign: str = Form("")
 ):
     user_id = get_current_user(request)
+
+    # === ENFORCE SINGLE IP AND SINGLE JOB ===
+    enforce_single_ip(request, user_id)
+    enforce_single_active_job(user_id)
 
     # Get a unique filename for S3 (avoid collisions)
     unique_filename = get_unique_s3_key("uploads", file.filename)
@@ -205,8 +267,10 @@ async def upload_file(
         s3_client.upload_file(upload_path, S3_BUCKET, job_data["input_file"])
         s3_client.upload_file(job_file, S3_BUCKET, f"jobs/{unique_filename}.json")
     except NoCredentialsError:
+        clear_active_job(user_id)
         return JSONResponse({"error": "AWS credentials not configured properly."}, status_code=500)
     except Exception as e:
+        clear_active_job(user_id)
         return JSONResponse({"error": str(e)}, status_code=500)
 
     # === PATCH: Parse link count from local report before uploading to S3 and saving to Firestore ===
@@ -234,6 +298,8 @@ async def upload_file(
         save_job_to_firestore(job_data)
     except Exception as e:
         print(f"Error saving job to Firestore: {e}")
+
+    clear_active_job(user_id)
 
     return JSONResponse({
         "message": "File received and uploaded to S3. Processing will start shortly.",
