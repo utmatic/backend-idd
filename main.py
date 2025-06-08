@@ -267,10 +267,10 @@ async def upload_file(
         s3_client.upload_file(upload_path, S3_BUCKET, job_data["input_file"])
         s3_client.upload_file(job_file, S3_BUCKET, f"jobs/{unique_filename}.json")
     except NoCredentialsError:
-        clear_active_job(user_id)
+        # clear_active_job(user_id)  # DO NOT clear here!
         return JSONResponse({"error": "AWS credentials not configured properly."}, status_code=500)
     except Exception as e:
-        clear_active_job(user_id)
+        # clear_active_job(user_id)  # DO NOT clear here!
         return JSONResponse({"error": str(e)}, status_code=500)
 
     # === PATCH: Parse link count from local report before uploading to S3 and saving to Firestore ===
@@ -299,7 +299,7 @@ async def upload_file(
     except Exception as e:
         print(f"Error saving job to Firestore: {e}")
 
-    clear_active_job(user_id)
+    # DO NOT clear_active_job(user_id) here! It should only be cleared when the job is actually processed by watcher.py
 
     return JSONResponse({
         "message": "File received and uploaded to S3. Processing will start shortly.",
