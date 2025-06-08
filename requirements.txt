@@ -6,4 +6,3 @@ firebase-admin
 pydantic
 requests
 gunicorn
-flask
