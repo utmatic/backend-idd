@@ -9,8 +9,9 @@ app = Flask(__name__)
 def test_firestore():
     try:
         cred_dict = json.loads(os.getenv("GOOGLE_APPLICATION_CREDENTIALS_JSON"))
-        cred = credentials.Certificate(cred_dict)
-        firebase_admin.initialize_app(cred)
+        if not firebase_admin._apps:
+            cred = credentials.Certificate(cred_dict)
+            firebase_admin.initialize_app(cred)
         db = firestore.client()
         docs = list(db.collection('inddJobs').limit(1).stream())
         return f"Success! Documents found: {len(docs)}"
