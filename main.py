@@ -46,6 +46,7 @@ os.makedirs(JOB_DIR, exist_ok=True)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["https://app.utmatic.com"],  # Only allow your frontend
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -179,8 +180,10 @@ def enforce_single_ip(request: Request, user_id: str):
 from datetime import datetime, timezone, timedelta
 
 def enforce_single_active_job(user_id: str):
-    # PATCH: Use Firestore transaction to avoid race conditions (only one job per user at a time)
     job_ref = get_active_job_ref(user_id)
+    transaction = db.transaction()
+
+    @firestore.transactional
     def transaction_func(transaction):
         job_doc = job_ref.get(transaction=transaction)
         if job_doc.exists and job_doc.to_dict().get("active"):
@@ -201,7 +204,8 @@ def enforce_single_active_job(user_id: str):
                     )
         # Mark active (only if not already active)
         transaction.set(job_ref, {"active": True, "startedAt": firestore.SERVER_TIMESTAMP})
-    db.transaction()(transaction_func)
+
+    transaction_func(transaction)
 
 def clear_active_job(user_id: str):
     job_ref = get_active_job_ref(user_id)
