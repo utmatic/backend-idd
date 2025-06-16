@@ -42,10 +42,13 @@ JOB_DIR = "jobs"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(JOB_DIR, exist_ok=True)
 
-# === CORS FIX: allow only your frontend origin, not "*" ===
+# === PATCH: CORS FIX: allow both www and app subdomains ===
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://app.utmatic.com"],  # Only allow your frontend
+    allow_origins=[
+        "https://app.utmatic.com",
+        "https://www.utmatic.com"
+    ],  # Allow both app and www origins
     allow_methods=["*"],
     allow_headers=["*"],
 )
