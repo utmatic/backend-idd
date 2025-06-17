@@ -253,7 +253,8 @@ def job_status(file_name: str):
         "processed_ready": False,
         "report_ready": False,
         "processed_url": "",
-        "report_url": ""
+        "report_url": "",
+        "link_count": 0
     }
 
     if s3_key_exists(processed_key):
@@ -262,6 +263,12 @@ def job_status(file_name: str):
     if s3_key_exists(report_key):
         status["report_ready"] = True
         status["report_url"] = s3_object_url(report_key)
+        # --- New: Fetch link_count from Firestore if available ---
+        job_doc = db.collection('inddJobs').document(file_name).get()
+        if job_doc.exists:
+            data = job_doc.to_dict()
+            if "link_count" in data:
+                status["link_count"] = data["link_count"]
 
     return JSONResponse(status)
 
